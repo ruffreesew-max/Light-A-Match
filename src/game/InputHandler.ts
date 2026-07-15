@@ -1,19 +1,34 @@
 import { Board } from './Board';
-import { Cell, cellsEqual } from './types';
+import { Cell } from './types';
 
-export type MatchCallback = (chain: Cell[]) => void;
+export type PickStoneCallback = (cell: Cell) => void;
+export type ShootCallback = (col: number, row: number) => void;
+
+export interface RestartButtonBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+const REPEAT_INITIAL_MS = 160;
+const REPEAT_INTERVAL_MS = 85;
 
 export class InputHandler {
-  private chain: Cell[] = [];
-  private dragging = false;
+  private shipCol = 2;
   private enabled = true;
+  private leftHeld = false;
+  private rightHeld = false;
+  private spaceHeld = false;
+  private repeatTimer = 0;
 
   constructor(
     private canvas: HTMLCanvasElement,
     private board: Board,
-    private getCellSize: () => number,
-    private getOffset: () => { x: number; y: number },
-    private onMatch: MatchCallback
+    private getRestartButton: () => RestartButtonBounds | null,
+    private onPickStone: PickStoneCallback,
+    private onShoot: ShootCallback,
+    private onRestart: () => void
   ) {
     this.bindEvents();
   }
@@ -21,101 +36,135 @@ export class InputHandler {
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     if (!enabled) {
-      this.chain = [];
-      this.dragging = false;
+      this.leftHeld = false;
+      this.rightHeld = false;
+      this.spaceHeld = false;
+      this.repeatTimer = 0;
     }
   }
 
-  getChain(): Cell[] {
-    return this.chain;
+  setBoard(board: Board): void {
+    this.board = board;
+    this.shipCol = Math.min(this.shipCol, this.getMaxShipCol());
   }
 
-  private bindEvents(): void {
-    this.canvas.addEventListener('pointerdown', this.onPointerDown);
-    this.canvas.addEventListener('pointermove', this.onPointerMove);
-    this.canvas.addEventListener('pointerup', this.onPointerUp);
-    this.canvas.addEventListener('pointercancel', this.onPointerUp);
-    this.canvas.addEventListener('pointerleave', this.onPointerUp);
+  getShipCol(): number {
+    return this.shipCol;
   }
 
-  private pointerToCell(clientX: number, clientY: number): Cell | null {
-    const rect = this.canvas.getBoundingClientRect();
-    const cellSize = this.getCellSize();
-    const offset = this.getOffset();
-
-    const x = clientX - rect.left - offset.x;
-    const y = clientY - rect.top - offset.y;
-
-    const col = Math.floor(x / cellSize);
-    const row = Math.floor(y / cellSize);
-
-    if (col < 0 || row < 0) return null;
-    if (this.board.getStone(col, row) === null) return null;
-
-    return { col, row };
+  resetShip(): void {
+    this.shipCol = Math.floor((this.board.cols - 1) / 2);
+    this.leftHeld = false;
+    this.rightHeld = false;
+    this.repeatTimer = 0;
   }
 
-  private onPointerDown = (e: PointerEvent): void => {
+  update(deltaMs: number): void {
     if (!this.enabled) return;
-    e.preventDefault();
-    this.canvas.setPointerCapture(e.pointerId);
 
-    const cell = this.pointerToCell(e.clientX, e.clientY);
-    if (!cell) return;
-
-    this.dragging = true;
-    this.chain = [cell];
-  };
-
-  private onPointerMove = (e: PointerEvent): void => {
-    if (!this.enabled || !this.dragging) return;
-    e.preventDefault();
-
-    const cell = this.pointerToCell(e.clientX, e.clientY);
-    if (!cell) return;
-
-    const last = this.chain[this.chain.length - 1];
-    if (cellsEqual(cell, last)) return;
-
-    if (
-      this.chain.length >= 2 &&
-      cellsEqual(cell, this.chain[this.chain.length - 2])
-    ) {
-      this.chain.pop();
+    if (!this.leftHeld && !this.rightHeld) {
+      this.repeatTimer = 0;
       return;
     }
 
-    if (this.chain.some((c) => cellsEqual(c, cell))) return;
+    this.repeatTimer -= deltaMs;
+    if (this.repeatTimer > 0) return;
 
-    const chainColor = this.board.getChainColor(this.chain);
-    const cellColor = this.board.getStone(cell.col, cell.row);
-    if (chainColor !== cellColor) return;
-
-    const dc = Math.abs(cell.col - last.col);
-    const dr = Math.abs(cell.row - last.row);
-    if (dc > 1 || dr > 1 || (dc === 0 && dr === 0)) return;
-
-    this.chain.push(cell);
-  };
-
-  private onPointerUp = (e: PointerEvent): void => {
-    if (!this.dragging) return;
-    e.preventDefault();
-
-    this.dragging = false;
-
-    if (this.chain.length >= 3 && this.board.isValidChain(this.chain)) {
-      this.onMatch([...this.chain]);
+    if (this.leftHeld) {
+      this.shipCol = Math.max(0, this.shipCol - 1);
+    } else if (this.rightHeld) {
+      this.shipCol = Math.min(this.getMaxShipCol(), this.shipCol + 1);
     }
 
-    this.chain = [];
+    this.repeatTimer = REPEAT_INTERVAL_MS;
+  }
+
+  private getMaxShipCol(): number {
+    return this.board.cols - 1;
+  }
+
+  private bindEvents(): void {
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    this.canvas.addEventListener('pointerdown', this.onPointerDown);
+  }
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (!this.enabled) return;
+
+    if (['ArrowLeft', 'ArrowRight', ' ', 'Spacebar'].includes(e.key)) {
+      e.preventDefault();
+    }
+
+    if (e.key === 'ArrowLeft') {
+      const shouldMove = !this.leftHeld || this.rightHeld;
+      this.leftHeld = true;
+      this.rightHeld = false;
+      if (shouldMove) {
+        this.shipCol = Math.max(0, this.shipCol - 1);
+      }
+      this.repeatTimer = REPEAT_INITIAL_MS;
+      return;
+    }
+
+    if (e.key === 'ArrowRight') {
+      const shouldMove = !this.rightHeld || this.leftHeld;
+      this.rightHeld = true;
+      this.leftHeld = false;
+      if (shouldMove) {
+        this.shipCol = Math.min(this.getMaxShipCol(), this.shipCol + 1);
+      }
+      this.repeatTimer = REPEAT_INITIAL_MS;
+      return;
+    }
+
+    if (e.key === ' ' || e.key === 'Spacebar') {
+      if (this.spaceHeld) return;
+      this.spaceHeld = true;
+      this.fire();
+    }
+  };
+
+  private onKeyUp = (e: KeyboardEvent): void => {
+    if (e.key === 'ArrowLeft') this.leftHeld = false;
+    if (e.key === 'ArrowRight') this.rightHeld = false;
+    if (e.key === ' ' || e.key === 'Spacebar') this.spaceHeld = false;
+  };
+
+  private fire(): void {
+    const col = this.shipCol;
+    const row = this.board.getTopStoneRow(col);
+    if (row === null) return;
+
+    const cell = { col, row };
+    this.onShoot(col, row);
+    this.onPickStone(cell);
+  }
+
+  private onPointerDown = (e: PointerEvent): void => {
+    const button = this.getRestartButton();
+    if (!button) return;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const x =
+      ((e.clientX - rect.left) / rect.width) * this.canvas.clientWidth;
+    const y =
+      ((e.clientY - rect.top) / rect.height) * this.canvas.clientHeight;
+
+    if (
+      x >= button.x &&
+      x <= button.x + button.width &&
+      y >= button.y &&
+      y <= button.y + button.height
+    ) {
+      e.preventDefault();
+      this.onRestart();
+    }
   };
 
   destroy(): void {
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
-    this.canvas.removeEventListener('pointermove', this.onPointerMove);
-    this.canvas.removeEventListener('pointerup', this.onPointerUp);
-    this.canvas.removeEventListener('pointercancel', this.onPointerUp);
-    this.canvas.removeEventListener('pointerleave', this.onPointerUp);
   }
 }

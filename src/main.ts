@@ -12,10 +12,4 @@ game.start();
 
 window.addEventListener('resize', () => game.resize());
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'r' || e.key === 'R') {
-    game.handleKeyRestart();
-  }
-});
-
 canvas.addEventListener('click', () => game.handleClick());

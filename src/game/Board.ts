@@ -1,46 +1,40 @@
 import {
-  COLS,
-  ROWS,
-  StoneColor,
   Cell,
-  randomStoneColor,
-  isAdjacent,
+  StoneColor,
 } from './types';
 
 export class Board {
   grid: (StoneColor | null)[][];
+  readonly cols: number;
+  readonly rows: number;
+  readonly colorCount: number;
 
-  constructor() {
+  constructor(cols: number, rows: number, colorCount: number) {
+    this.cols = cols;
+    this.rows = rows;
+    this.colorCount = colorCount;
     this.grid = this.createEmptyGrid();
   }
 
   private createEmptyGrid(): (StoneColor | null)[][] {
-    return Array.from({ length: ROWS }, () =>
-      Array.from({ length: COLS }, () => null)
+    return Array.from({ length: this.rows }, () =>
+      Array.from({ length: this.cols }, () => null)
     );
   }
 
-  fillRandom(): void {
-    for (let row = 0; row < ROWS; row++) {
-      for (let col = 0; col < COLS; col++) {
-        this.grid[row][col] = randomStoneColor();
-      }
-    }
-    let attempts = 0;
-    while (!this.hasValidMove() && attempts < 50) {
-      this.reshuffle();
-      attempts++;
-    }
+  clone(): Board {
+    const copy = new Board(this.cols, this.rows, this.colorCount);
+    copy.grid = this.grid.map((row) => [...row]);
+    return copy;
+  }
+
+  loadGrid(grid: (StoneColor | null)[][]): void {
+    this.grid = grid.map((row) => [...row]);
   }
 
   getStone(col: number, row: number): StoneColor | null {
-    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return null;
+    if (col < 0 || col >= this.cols || row < 0 || row >= this.rows) return null;
     return this.grid[row][col];
-  }
-
-  setStone(col: number, row: number, color: StoneColor | null): void {
-    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return;
-    this.grid[row][col] = color;
   }
 
   clearCells(cells: Cell[]): void {
@@ -49,12 +43,41 @@ export class Board {
     }
   }
 
+  isEmpty(): boolean {
+    for (let row = 0; row < this.rows; row++) {
+      for (let col = 0; col < this.cols; col++) {
+        if (this.grid[row][col] !== null) return false;
+      }
+    }
+    return true;
+  }
+
+  getTopStoneRow(col: number): number | null {
+    for (let row = 0; row < this.rows; row++) {
+      if (this.grid[row][col] !== null) return row;
+    }
+    return null;
+  }
+
+  getAccessibleCells(): Cell[] {
+    const accessible: Cell[] = [];
+    for (let col = 0; col < this.cols; col++) {
+      const row = this.getTopStoneRow(col);
+      if (row !== null) accessible.push({ col, row });
+    }
+    return accessible;
+  }
+
+  isAccessible(col: number, row: number): boolean {
+    return this.getTopStoneRow(col) === row;
+  }
+
   applyGravity(): { from: Cell; to: Cell; color: StoneColor }[] {
     const moves: { from: Cell; to: Cell; color: StoneColor }[] = [];
 
-    for (let col = 0; col < COLS; col++) {
-      let writeRow = ROWS - 1;
-      for (let row = ROWS - 1; row >= 0; row--) {
+    for (let col = 0; col < this.cols; col++) {
+      let writeRow = 0;
+      for (let row = 0; row < this.rows; row++) {
         const stone = this.grid[row][col];
         if (stone !== null) {
           if (row !== writeRow) {
@@ -66,7 +89,7 @@ export class Board {
               color: stone,
             });
           }
-          writeRow--;
+          writeRow++;
         }
       }
     }
@@ -74,122 +97,68 @@ export class Board {
     return moves;
   }
 
-  refill(): { col: number; row: number; color: StoneColor }[] {
-    const spawns: { col: number; row: number; color: StoneColor }[] = [];
+  isValidMatch(selection: Cell[]): boolean {
+    if (selection.length !== 3) return false;
 
-    for (let col = 0; col < COLS; col++) {
-      for (let row = 0; row < ROWS; row++) {
-        if (this.grid[row][col] === null) {
-          const color = randomStoneColor();
-          this.grid[row][col] = color;
-          spawns.push({ col, row, color });
-        }
-      }
+    const color = this.getStone(selection[0].col, selection[0].row);
+    if (color === null) return false;
+
+    for (const cell of selection) {
+      if (!this.isAccessible(cell.col, cell.row)) return false;
+      if (this.getStone(cell.col, cell.row) !== color) return false;
     }
 
-    return spawns;
+    const cols = new Set(selection.map((c) => c.col));
+    return cols.size === 3;
   }
 
-  reshuffle(): void {
-    const stones: StoneColor[] = [];
-    for (let row = 0; row < ROWS; row++) {
-      for (let col = 0; col < COLS; col++) {
-        const stone = this.grid[row][col];
-        if (stone !== null) stones.push(stone);
-      }
-    }
+  isValidMatchFromSlots(
+    slots: { cell: Cell; color: StoneColor }[]
+  ): boolean {
+    if (slots.length !== 3) return false;
 
-    for (let i = stones.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [stones[i], stones[j]] = [stones[j], stones[i]];
-    }
-
-    let idx = 0;
-    for (let row = 0; row < ROWS; row++) {
-      for (let col = 0; col < COLS; col++) {
-        this.grid[row][col] = stones[idx++];
-      }
-    }
+    // A valid match is simply 3 stones of the same color. Stones may come from
+    // the same column (fired one after another as each becomes the new top),
+    // so we no longer require 3 distinct columns.
+    const color = slots[0].color;
+    return slots.every((s) => s.color === color);
   }
 
-  hasValidMove(): boolean {
-    const visited = Array.from({ length: ROWS }, () =>
-      Array.from({ length: COLS }, () => false)
-    );
-
-    for (let row = 0; row < ROWS; row++) {
-      for (let col = 0; col < COLS; col++) {
-        const color = this.grid[row][col];
-        if (color === null || visited[row][col]) continue;
-
-        const size = this.floodFill(col, row, color, visited);
-        if (size >= 3) return true;
-      }
-    }
-
-    return false;
-  }
-
-  private floodFill(
-    col: number,
-    row: number,
-    color: StoneColor,
-    visited: boolean[][]
-  ): number {
-    const stack: Cell[] = [{ col, row }];
+  countStones(): number {
     let count = 0;
-
-    while (stack.length > 0) {
-      const cell = stack.pop()!;
-      if (
-        cell.col < 0 ||
-        cell.col >= COLS ||
-        cell.row < 0 ||
-        cell.row >= ROWS ||
-        visited[cell.row][cell.col]
-      ) {
-        continue;
-      }
-
-      if (this.grid[cell.row][cell.col] !== color) continue;
-
-      visited[cell.row][cell.col] = true;
-      count++;
-
-      for (let dc = -1; dc <= 1; dc++) {
-        for (let dr = -1; dr <= 1; dr++) {
-          if (dc === 0 && dr === 0) continue;
-          stack.push({ col: cell.col + dc, row: cell.row + dr });
-        }
+    for (let row = 0; row < this.rows; row++) {
+      for (let col = 0; col < this.cols; col++) {
+        if (this.grid[row][col] !== null) count++;
       }
     }
-
     return count;
-  }
-
-  isValidChain(chain: Cell[]): boolean {
-    if (chain.length < 3) return false;
-
-    const firstColor = this.getStone(chain[0].col, chain[0].row);
-    if (firstColor === null) return false;
-
-    for (let i = 0; i < chain.length; i++) {
-      const { col, row } = chain[i];
-      if (this.getStone(col, row) !== firstColor) return false;
-      if (i > 0 && !isAdjacent(chain[i - 1], chain[i])) return false;
-    }
-
-    return true;
-  }
-
-  getChainColor(chain: Cell[]): StoneColor | null {
-    if (chain.length === 0) return null;
-    return this.getStone(chain[0].col, chain[0].row);
   }
 }
 
-export function createBoardWithValidMoves(): Board {
-  const board = new Board();
-  board.fillRandom();
-  return board;
+export function boardsEqual(a: Board, b: Board): boolean {
+  if (a.cols !== b.cols || a.rows !== b.rows) return false;
+  for (let row = 0; row < a.rows; row++) {
+    for (let col = 0; col < a.cols; col++) {
+      if (a.getStone(col, row) !== b.getStone(col, row)) return false;
+    }
+  }
+  return true;
+}
+
+export function selectionUsesUniqueColumns(selection: Cell[]): boolean {
+  const cols = selection.map((c) => c.col);
+  return new Set(cols).size === cols.length;
+}
+
+export function selectionHasUniformColor(board: Board, selection: Cell[]): boolean {
+  if (selection.length === 0) return false;
+  const color = board.getStone(selection[0].col, selection[0].row);
+  if (color === null) return false;
+  return selection.every(
+    (cell) => board.getStone(cell.col, cell.row) === color
+  );
+}
+
+export function selectionIsAccessible(board: Board, selection: Cell[]): boolean {
+  return selection.every((cell) => board.isAccessible(cell.col, cell.row));
 }

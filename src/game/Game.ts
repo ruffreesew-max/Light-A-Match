@@ -1,40 +1,41 @@
-import { createBoardWithValidMoves, Board } from './Board';
-import { MatchEngine } from './MatchEngine';
+import { Board } from './Board';
 import { InputHandler } from './InputHandler';
 import { Renderer } from './Renderer';
-import { ScoreManager } from './ScoreManager';
-import { Cell, GamePhase } from './types';
+import { LevelManager } from './LevelManager';
+import {
+  Cell,
+  GamePhase,
+  SlotStone,
+  SLOT_ANIM_MS,
+  SLOT_RETURN_MS,
+  SHOT_FLIGHT_MS,
+  MAX_STRIKES,
+  cellsEqual,
+} from './types';
+
+const MAX_SLOTS = 3;
 
 export class Game {
   private board: Board;
-  private matchEngine: MatchEngine;
-  private scoreManager: ScoreManager;
+  private levelManager: LevelManager;
   private renderer: Renderer;
   private inputHandler: InputHandler;
   private phase: GamePhase = 'menu';
+  private slots: SlotStone[] = [];
+  private strikes = 0;
   private lastTime = 0;
-  private earnedScore = 0;
-  private earnedScoreTimer = 0;
   private rafId = 0;
 
   constructor(
     private canvas: HTMLCanvasElement,
-    private ctx: CanvasRenderingContext2D
+    _ctx: CanvasRenderingContext2D
   ) {
-    this.board = createBoardWithValidMoves();
-    this.matchEngine = new MatchEngine(this.board);
-    this.scoreManager = new ScoreManager();
-    this.renderer = new Renderer(canvas, ctx);
-    this.renderer.resize();
+    this.levelManager = new LevelManager();
+    this.board = this.levelManager.createBoard();
+    this.renderer = new Renderer(canvas, _ctx);
+    this.renderer.resize(this.board.cols, this.board.rows);
 
-    this.inputHandler = new InputHandler(
-      canvas,
-      this.board,
-      () => this.renderer.getCellSize(),
-      () => this.renderer.getOffset(),
-      (chain) => this.handleMatch(chain)
-    );
-
+    this.inputHandler = this.createInputHandler();
     this.inputHandler.setEnabled(false);
   }
 
@@ -44,110 +45,240 @@ export class Game {
   }
 
   resize(): void {
-    this.renderer.resize();
+    this.renderer.resize(this.board.cols, this.board.rows);
   }
 
   handleClick(): void {
     if (this.phase === 'menu') {
-      this.startGame();
-    } else if (this.phase === 'gameOver') {
-      this.startGame();
+      this.strikes = 0;
+      this.startLevel();
+    } else if (this.phase === 'strikeOut') {
+      this.strikes = 0;
+      this.levelManager.resetToLevel(1);
+      this.startLevel();
+    } else if (this.phase === 'levelComplete') {
+      this.advanceLevel();
+    } else if (this.phase === 'gameComplete') {
+      this.strikes = 0;
+      this.levelManager.resetToLevel(1);
+      this.startLevel();
     }
   }
 
-  handleKeyRestart(): void {
-    if (this.phase === 'gameOver') {
-      this.startGame();
-    }
-  }
-
-  private startGame(): void {
-    this.board = createBoardWithValidMoves();
-    this.matchEngine = new MatchEngine(this.board);
-    this.scoreManager.reset();
-    this.phase = 'playing';
-    this.earnedScore = 0;
-    this.earnedScoreTimer = 0;
-    this.inputHandler.setEnabled(true);
-
-    this.inputHandler.destroy();
-    this.inputHandler = new InputHandler(
+  private createInputHandler(): InputHandler {
+    return new InputHandler(
       this.canvas,
       this.board,
-      () => this.renderer.getCellSize(),
-      () => this.renderer.getOffset(),
-      (chain) => this.handleMatch(chain)
+      () => this.renderer.getRestartButtonBounds(this.phase),
+      (cell) => this.handlePickStone(cell),
+      (col, row) => this.renderer.triggerShoot(col, row),
+      () => this.resetLevel()
     );
   }
 
-  private handleMatch(chain: Cell[]): void {
+  private startLevel(): void {
+    this.board = this.levelManager.createBoard();
+    this.phase = 'playing';
+    this.slots = [];
+    this.renderer.resize(this.board.cols, this.board.rows);
+    this.replaceInputHandler();
+    this.inputHandler.resetShip();
+    this.inputHandler.setEnabled(true);
+  }
+
+  private advanceLevel(): void {
+    const completedLevel = this.levelManager.getConfig().level;
+    if (completedLevel >= 30) {
+      this.phase = 'gameComplete';
+      this.inputHandler.setEnabled(false);
+      return;
+    }
+    this.levelManager.completeLevel();
+    this.startLevel();
+  }
+
+  resetLevel(): void {
+    if (this.phase === 'menu') return;
+    // Full run restart: back to Level I with a fresh board and cleared strikes.
+    this.strikes = 0;
+    this.levelManager.resetToLevel(1);
+    this.startLevel();
+  }
+
+  private replaceInputHandler(): void {
+    this.inputHandler.destroy();
+    this.inputHandler = this.createInputHandler();
+  }
+
+  private handlePickStone(cell: Cell): void {
     if (this.phase !== 'playing') return;
 
-    const chainColor = this.board.getChainColor(chain);
-    const result = this.matchEngine.executeMatch(chain);
-    if (!result) return;
+    const existing = this.slots.find((s) => cellsEqual(s.cell, cell));
+    if (existing) {
+      this.returnSlot(existing);
+      return;
+    }
 
-    this.phase = 'animating';
+    if (this.slots.filter((s) => !s.returning).length >= MAX_SLOTS) return;
+
+    const color = this.board.getStone(cell.col, cell.row);
+    if (color === null) return;
+
+    const slotIndex = this.slots.length;
+    this.board.clearCells([cell]);
+
+    this.slots.push({
+      cell,
+      color,
+      slotIndex,
+      progress: 0,
+      returning: false,
+      liftDelayMs: SHOT_FLIGHT_MS,
+    });
+  }
+
+  private returnSlot(slot: SlotStone): void {
+    slot.returning = true;
+  }
+
+  private reindexSlots(): void {
+    this.slots.forEach((s, i) => {
+      s.slotIndex = i;
+    });
+  }
+
+  private updateSlots(deltaMs: number): void {
+    for (const slot of this.slots) {
+      if (slot.returning) {
+        const speed = deltaMs / SLOT_RETURN_MS;
+        slot.progress = Math.max(0, slot.progress - speed);
+        if (slot.progress <= 0) {
+          this.board.grid[slot.cell.row][slot.cell.col] = slot.color;
+        }
+        continue;
+      }
+
+      // Hold the stone in its grid cell until the cannonball reaches it, then
+      // start lifting it into the slot.
+      if (slot.liftDelayMs > 0) {
+        slot.liftDelayMs = Math.max(0, slot.liftDelayMs - deltaMs);
+        continue;
+      }
+
+      const speed = deltaMs / SLOT_ANIM_MS;
+      slot.progress = Math.min(1, slot.progress + speed);
+    }
+
+    this.slots = this.slots.filter(
+      (s) => !(s.returning && s.progress <= 0)
+    );
+    if (this.phase === 'playing') {
+      this.reindexSlots();
+    }
+  }
+
+  private checkSlotsReady(): boolean {
+    return (
+      this.slots.length === MAX_SLOTS &&
+      this.slots.every((s) => !s.returning && s.progress >= 1)
+    );
+  }
+
+  private tryResolveSlots(): void {
+    if (!this.checkSlotsReady()) return;
+
+    if (!this.board.isValidMatchFromSlots(this.slots)) {
+      this.triggerMistake();
+      return;
+    }
+
+    const color = this.slots[0].color;
+    const cells = this.slots.map((s) => s.cell);
+    const clearing = [...this.slots];
+    this.slots = [];
+
+    // The clear is purely a visual flourish now (the board cells were already
+    // emptied when each stone was fired). Keep the game in 'playing' so input
+    // stays enabled and the player can immediately fire at the newly exposed
+    // top stones instead of being locked out during the animation.
+    this.renderer.startSlotMatchClear(clearing);
+    this.renderer.spawnParticles(cells, color);
+
+    if (this.board.isEmpty()) {
+      this.phase = 'levelComplete';
+      this.inputHandler.setEnabled(false);
+    }
+  }
+
+  private triggerMistake(): void {
+    this.strikes = Math.min(MAX_STRIKES, this.strikes + 1);
+    this.phase = 'slotReturn';
     this.inputHandler.setEnabled(false);
 
-    const earned = this.scoreManager.registerMatch(chain.length);
-    this.earnedScore = earned;
-    this.earnedScoreTimer = 800;
-
-    const animations = this.matchEngine.buildAnimations(
-      result,
-      this.renderer.getCellSize()
-    );
-    this.renderer.setAnimations(animations);
-
-    if (chainColor) {
-      this.renderer.spawnParticles(result.clearedCells, chainColor);
+    for (const slot of [...this.slots]) {
+      slot.returning = true;
     }
   }
 
   private loop = (time: number): void => {
-    const deltaMs = time - this.lastTime;
+    try {
+      this.tick(time);
+    } catch (err) {
+      // Never let a single frame's error permanently kill the render loop:
+      // log it and keep scheduling frames so the game stays responsive.
+      console.error('[Game.loop] frame error:', err);
+    } finally {
+      this.rafId = requestAnimationFrame(this.loop);
+    }
+  };
+
+  private tick(time: number): void {
+    const deltaMs = Math.min(time - this.lastTime, 50);
     this.lastTime = time;
-    const deltaSeconds = deltaMs / 1000;
 
     if (this.phase === 'playing') {
-      this.scoreManager.updateComboIdle();
-      const timeUp = this.scoreManager.updateTimer(deltaSeconds);
-      if (timeUp) {
-        this.phase = 'gameOver';
-        this.scoreManager.finalizeHighScore();
-        this.inputHandler.setEnabled(false);
-      }
+      this.inputHandler.update(deltaMs);
     }
 
-    if (this.phase === 'animating') {
-      const done = this.renderer.updateAnimations(deltaMs);
-      if (done) {
+    if (
+      this.phase === 'playing' ||
+      this.phase === 'slotReturn'
+    ) {
+      this.updateSlots(deltaMs);
+    }
+
+    if (this.phase === 'playing') {
+      this.tryResolveSlots();
+    }
+
+    if (this.phase === 'slotReturn' && this.slots.length === 0) {
+      if (this.strikes >= MAX_STRIKES) {
+        this.phase = 'strikeOut';
+        this.inputHandler.setEnabled(false);
+      } else {
         this.phase = 'playing';
         this.inputHandler.setEnabled(true);
       }
     }
 
+    // The match-clear animation is purely cosmetic and runs independently of the
+    // game phase, so advance it every frame.
+    this.renderer.updateSlotClearAnim(deltaMs);
+
     this.renderer.updateParticles(deltaMs);
+    this.renderer.updateShootEffect(deltaMs);
 
-    if (this.earnedScoreTimer > 0) {
-      this.earnedScoreTimer -= deltaMs;
-      if (this.earnedScoreTimer <= 0) {
-        this.earnedScore = 0;
-      }
-    }
+    const shipCol = this.inputHandler.getShipCol();
 
-    const chain = this.inputHandler.getChain();
     this.renderer.render(
       this.board,
-      chain,
-      this.scoreManager,
+      this.slots,
+      this.levelManager,
       this.phase,
-      this.earnedScore
+      shipCol,
+      this.strikes
     );
-
-    this.rafId = requestAnimationFrame(this.loop);
-  };
+  }
 
   destroy(): void {
     cancelAnimationFrame(this.rafId);
