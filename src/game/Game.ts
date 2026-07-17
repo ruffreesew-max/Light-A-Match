@@ -12,6 +12,11 @@ import {
   MAX_STRIKES,
   cellsEqual,
 } from './types';
+import { isSheetsConfigured } from '../stats/config';
+import { getPlayerId, getPlayerName } from '../stats/player';
+import { RunTracker } from '../stats/runTracker';
+import { submitRun } from '../stats/sheetsClient';
+import type { RunOutcome } from '../stats/types';
 
 const MAX_SLOTS = 3;
 
@@ -25,6 +30,8 @@ export class Game {
   private strikes = 0;
   private lastTime = 0;
   private rafId = 0;
+  private runTracker = new RunTracker();
+  private submittingRun = false;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -51,17 +58,19 @@ export class Game {
   handleClick(): void {
     if (this.phase === 'menu') {
       this.strikes = 0;
-      this.startLevel();
+      this.startLevel({ newRun: true });
     } else if (this.phase === 'strikeOut') {
+      void this.finishRun('strike_out');
       this.strikes = 0;
       this.levelManager.resetToLevel(1);
-      this.startLevel();
+      this.startLevel({ newRun: true });
     } else if (this.phase === 'levelComplete') {
       this.advanceLevel();
     } else if (this.phase === 'gameComplete') {
+      void this.finishRun('victoria');
       this.strikes = 0;
       this.levelManager.resetToLevel(1);
-      this.startLevel();
+      this.startLevel({ newRun: true });
     }
   }
 
@@ -76,7 +85,7 @@ export class Game {
     );
   }
 
-  private startLevel(): void {
+  private startLevel(options?: { newRun?: boolean }): void {
     this.board = this.levelManager.createBoard();
     this.phase = 'playing';
     this.slots = [];
@@ -84,6 +93,13 @@ export class Game {
     this.replaceInputHandler();
     this.inputHandler.resetShip();
     this.inputHandler.setEnabled(true);
+
+    const level = this.levelManager.getConfig().level;
+    if (options?.newRun || !this.runTracker.isActive()) {
+      this.runTracker.begin(level);
+    } else {
+      this.runTracker.noteLevelReached(level);
+    }
   }
 
   private advanceLevel(): void {
@@ -99,10 +115,12 @@ export class Game {
 
   resetLevel(): void {
     if (this.phase === 'menu') return;
-    // Full run restart: back to Level I with a fresh board and cleared strikes.
+    if (this.runTracker.isActive()) {
+      void this.finishRun('restart');
+    }
     this.strikes = 0;
     this.levelManager.resetToLevel(1);
-    this.startLevel();
+    this.startLevel({ newRun: true });
   }
 
   private replaceInputHandler(): void {
@@ -197,6 +215,8 @@ export class Game {
     const clearing = [...this.slots];
     this.slots = [];
 
+    this.runTracker.noteMatch();
+
     // The clear is purely a visual flourish now (the board cells were already
     // emptied when each stone was fired). Keep the game in 'playing' so input
     // stays enabled and the player can immediately fire at the newly exposed
@@ -205,6 +225,7 @@ export class Game {
     this.renderer.spawnParticles(cells, color);
 
     if (this.board.isEmpty()) {
+      this.runTracker.noteLevelCleared(this.levelManager.getConfig().level);
       this.phase = 'levelComplete';
       this.inputHandler.setEnabled(false);
     }
@@ -217,6 +238,36 @@ export class Game {
 
     for (const slot of [...this.slots]) {
       slot.returning = true;
+    }
+  }
+
+  private async finishRun(outcome: RunOutcome): Promise<void> {
+    if (!this.runTracker.isActive() || this.submittingRun) return;
+    if (!isSheetsConfigured()) {
+      this.runTracker.end();
+      return;
+    }
+
+    const snap = this.runTracker.snapshot(this.strikes);
+    this.runTracker.end();
+
+    // Skip empty / trivial restarts with no progress.
+    if (outcome === 'restart' && snap.levelsCleared === 0 && snap.matches === 0) {
+      return;
+    }
+
+    this.submittingRun = true;
+    try {
+      await submitRun({
+        playerName: getPlayerName() || 'Anonymous',
+        playerId: getPlayerId(),
+        outcome,
+        ...snap,
+      });
+    } catch (err) {
+      console.error('[Game] failed to submit run:', err);
+    } finally {
+      this.submittingRun = false;
     }
   }
 

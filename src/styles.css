@@ -16,6 +16,7 @@ body {
 }
 
 #app {
+  position: relative;
   width: 100%;
   height: 100%;
   display: flex;
@@ -27,4 +28,138 @@ body {
   display: block;
   max-width: 100%;
   max-height: 100%;
+}
+
+#leaderboard-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  padding: 8px 14px;
+  border: 2px solid #c9a227;
+  border-radius: 8px;
+  background: rgba(42, 28, 18, 0.92);
+  color: #f5ead6;
+  font: bold 14px "Times New Roman", "Palatino Linotype", Georgia, serif;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+#leaderboard-btn:hover {
+  background: rgba(60, 40, 26, 0.95);
+}
+
+#stats-panel {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  align-items: center;
+  justify-content: center;
+  background: rgba(24, 16, 10, 0.72);
+  padding: 16px;
+}
+
+#stats-panel.is-open {
+  display: flex;
+}
+
+.stats-card {
+  width: min(420px, 100%);
+  max-height: min(80vh, 560px);
+  overflow: auto;
+  padding: 20px 18px 16px;
+  border: 2px solid #c9a227;
+  border-radius: 12px;
+  background: #2a1c12;
+  color: #f5ead6;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.stats-card h2 {
+  margin: 0 0 12px;
+  color: #c9a227;
+  font-size: 28px;
+  text-align: center;
+}
+
+.stats-card h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #c9a227;
+}
+
+.stats-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #c8bfb0;
+  font-size: 14px;
+}
+
+.stats-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stats-row-spread {
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+}
+
+.stats-card input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(201, 162, 39, 0.45);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #f5ead6;
+  font: 16px "Times New Roman", "Palatino Linotype", Georgia, serif;
+}
+
+.stats-card button {
+  padding: 8px 12px;
+  border: 1px solid #c9a227;
+  border-radius: 6px;
+  background: rgba(201, 162, 39, 0.15);
+  color: #f5ead6;
+  font: bold 14px "Times New Roman", "Palatino Linotype", Georgia, serif;
+  cursor: pointer;
+}
+
+.stats-hint {
+  min-height: 1.2em;
+  margin: 4px 0 0;
+  color: #9e9588;
+  font-size: 13px;
+}
+
+.stats-list {
+  margin: 8px 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.stats-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(201, 162, 39, 0.2);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.stats-rank {
+  color: #c9a227;
+  font-weight: bold;
+}
+
+.stats-empty {
+  color: #9e9588;
+}
+
+.stats-close {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
 }
